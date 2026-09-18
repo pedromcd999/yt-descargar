@@ -77,7 +77,7 @@ Elige [1]: 2
 
 ### 📁 Cómo se organizan los archivos
 
-- **Videos sueltos**: se guardan en la carpeta actual con su título (`CURSO REACT.JS.mp4`).
+- **Videos sueltos**: se guardan en la carpeta actual con su título (`Mi video.mp4`).
 - **Playlists**: se crea una carpeta con el **nombre de la playlist** y dentro los videos numerados:
 
 ```
@@ -90,7 +90,7 @@ Mi Playlist/
 | Resolución | Ejemplo | Nota |
 |---|---|---|
 | `max` | `max` | Máxima calidad que YouTube ofrece para ese video (puede ser enorme) |
-| `1080` | `1080` | Full HD (recomendado para cursos) |
+| `1080` | `1080` | Full HD |
 | `720` / `480` / `360` | `720` | Ahorra tamaño y tiempo de descarga |
 | `audio` | `audio` | Solo audio, convertido a **mp3** |
 
