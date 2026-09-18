@@ -1,13 +1,17 @@
 # 🎬 descargar — YouTube Downloader (yt-dlp) autoconfigurable
 
-Script de bash para descargar videos de YouTube con **yt-dlp** en la mejor calidad disponible, que se configura solo.
+Script de bash para descargar **videos y playlists** de YouTube con **yt-dlp** en la mejor calidad disponible, que se configura solo.
 
 ## ✨ Características
 
 - **Se auto-instala las dependencias**: verifica si faltan `python3`, `curl`, `ffmpeg` y un runtime JS (`node`/`deno`/`bun`), y las instala con el gestor de paquetes de tu sistema (`apt`, `dnf`, `yum`, `pacman`, `zypper`, `apk`, `pkg`/Termux, `brew`/macOS).
 - **yt-dlp siempre actualizado**: si no lo encuentra, descarga la última versión oficial en `~/.local/bin`.
 - **Evita el error HTTP 403 de YouTube**: usa un runtime JS para resolver los retos de YouTube (PO tokens / nsig).
-- **Interfaz mínima**: solo te pide la **URL** y la **resolución**. Nada más.
+- **Soporta playlists completas**: pega el enlace de una playlist y descarga todos sus videos.
+- **Detecta el tipo de enlace** (video suelto / playlist pura / video dentro de playlist) y ajusta las preguntas según el caso.
+- **Elige cuántos videos descargar** de una playlist: todos, los primeros `N`, o un rango `a-b`.
+- **Organiza las playlists en carpetas**: cada playlist se guarda en una carpeta con su nombre, con videos numerados.
+- **Interfaz mínima**: solo te pide la **URL**, cuántos videos (si aplica) y la **resolución**. Nada más.
 - **Reintentos automáticos** (5) ante cortes de red.
 - **Funciona en**: Linux, macOS, WSL, Termux (Android).
 
@@ -37,10 +41,12 @@ descargar
 
 ## 🎯 Uso
 
-Ejecuta `descargar` y responde las dos preguntas:
+Ejecuta `descargar` y responde las preguntas según el tipo de enlace:
+
+**1) Video suelto** — solo pide URL y resolución:
 
 ```
-🔗 URL del video: https://youtu.be/7iobxzd_2wY
+🔗 URL del video o playlist: https://youtu.be/7iobxzd_2wY
 
 Resoluciones disponibles:
   max            → máxima calidad disponible (por defecto)
@@ -49,7 +55,37 @@ Resoluciones disponibles:
 🎚 Resolución [max]: 1080
 ```
 
-El video se guarda **en la carpeta desde donde ejecutes el script**.
+**2) Playlist pura** (`youtube.com/playlist?list=...`) — avisa cuántos videos tiene y pregunta cuántos descargar:
+
+```
+🔗 URL del video o playlist: https://www.youtube.com/playlist?list=PLxxxxx
+
+  La playlist tiene 25 videos.
+🎞 ¿Cuántos videos quieres descargar? (Enter = todos, N = primeros N, a-b = rango) [todos]: 10
+
+🎚 Resolución [max]: 720
+```
+
+**3) Video dentro de playlist** (`youtu.be/xxx?list=...` o `watch?v=...&list=...`) — pregunta qué quieres:
+
+```
+⚠ Este enlace contiene un video Y una playlist. ¿Qué deseas descargar?
+  1) Solo el video
+  2) Toda la playlist
+Elige [1]: 2
+```
+
+### 📁 Cómo se organizan los archivos
+
+- **Videos sueltos**: se guardan en la carpeta actual con su título (`CURSO REACT.JS.mp4`).
+- **Playlists**: se crea una carpeta con el **nombre de la playlist** y dentro los videos numerados:
+
+```
+Mi Playlist/
+├── 001 - Primer video.mp4
+├── 002 - Segundo video.mp4
+└── 003 - Tercer video.mp4
+```
 
 | Resolución | Ejemplo | Nota |
 |---|---|---|
