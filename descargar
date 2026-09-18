@@ -1,296 +1,250 @@
 #!/usr/bin/env bash
-# Descarga videos o playlists de YouTube con yt-dlp actualizado.
-# Verifica e instala automáticamente las dependencias necesarias:
-#   - python3, curl, ffmpeg            (obligatorias)
-#   - node / deno / bun                (runtime JS para YouTube, recomendado)
-# Funciones:
-#   - Detecta si el enlace es un video, una playlist o un video dentro de una playlist
-#   - Si es playlist, pregunta cuántos videos descargar (todos / N / rango)
-#   - Organiza las playlists en una carpeta con el nombre de la playlist
-# Guarda los archivos en la carpeta desde donde ejecutes el script.
+# Descarga videos/playlists (YouTube y otros sitios) con yt-dlp. Se auto-instala
+# las dependencias (python3, curl, ffmpeg, runtime JS) y la última versión de
+# yt-dlp. Pregunta URL, cuántos videos (si es playlist) y resolución; las
+# playlists se guardan en una carpeta con su nombre y videos numerados.
 #
-# CRÉDITOS: las descargas las realiza yt-dlp (https://github.com/yt-dlp/yt-dlp,
-# licencia Unlicense). Este script es solo un wrapper: descarga el binario
-# OFICIAL de yt-dlp desde sus releases y lo ejecuta. Este script no contiene
-# ni modifica el código de yt-dlp.
+# CRÉDITOS: las descargas las realiza yt-dlp (github.com/yt-dlp/yt-dlp, licencia
+# Unlicense). Este script es un wrapper: baja el binario OFICIAL de yt-dlp desde
+# sus releases y lo ejecuta. No contiene ni modifica el código de yt-dlp.
 
 set -euo pipefail
 
 YTDLP="$HOME/.local/bin/yt-dlp"
-MISSING_DEPS=""
 
-# ============================================================
-# 1) DETECTAR GESTOR DE PAQUETES DEL SISTEMA
-# ============================================================
-detect_pkgmgr() {
-  if command -v apt-get >/dev/null 2>&1; then
-    echo "apt"
-  elif command -v dnf >/dev/null 2>&1; then
-    echo "dnf"
-  elif command -v yum >/dev/null 2>&1; then
-    echo "yum"
-  elif command -v pacman >/dev/null 2>&1; then
-    echo "pacman"
-  elif command -v zypper >/dev/null 2>&1; then
-    echo "zypper"
-  elif command -v apk >/dev/null 2>&1; then
-    echo "apk"
-  elif command -v pkg >/dev/null 2>&1 && command -v termux-info >/dev/null 2>&1; then
-    echo "pkg"
-  elif command -v brew >/dev/null 2>&1; then
-    echo "brew"
+main() {
+  ensure_deps
+  ensure_ytdlp
+
+  # Runtime JS para resolver los retos de YouTube
+  JS_ARGS=()
+  if command -v node >/dev/null 2>&1; then
+    JS_ARGS=(--js-runtimes node)
+  elif command -v bun >/dev/null 2>&1; then
+    JS_ARGS=(--js-runtimes bun)
+  fi
+
+  # ── URL ──
+  while true; do
+    read -r -p "🔗 URL del video o playlist: " URL
+    [[ -n "$URL" ]] && break
+    echo "❌ Escribe una URL." >&2
+  done
+
+  # Clasifica el enlace: video | playlist | video+playlist
+  if [[ "$URL" != *"list="* ]]; then
+    URL_TYPE="video"
+  elif [[ "$URL" == *"/playlist?"* ]]; then
+    URL_TYPE="playlist"
   else
+    URL_TYPE="video+playlist"
+  fi
+
+  YES_PLAYLIST=(); NO_PLAYLIST=(); PLAYLIST_ITEMS=(); OUTPUT_ARGS=()
+  IS_PLAYLIST=0
+
+  # ── Enlace con video Y playlist: que el usuario decida ──
+  if [[ "$URL_TYPE" == "video+playlist" ]]; then
+    echo "⚠ El enlace contiene un video Y una playlist. ¿Qué deseas?"
+    echo "  1) Solo el video      2) Toda la playlist"
+    while true; do
+      read -r -p "Elige [1]: " COMBO
+      COMBO="${COMBO:-1}"
+      case "$COMBO" in
+        1) NO_PLAYLIST=(--no-playlist); break ;;
+        2) YES_PLAYLIST=(--yes-playlist); IS_PLAYLIST=1; break ;;
+        *) echo "❌ Opción 1 o 2." >&2 ;;
+      esac
+    done
+  elif [[ "$URL_TYPE" == "playlist" ]]; then
+    YES_PLAYLIST=(--yes-playlist)
+    IS_PLAYLIST=1
+  fi
+
+  # ── Pre-flight: ¿la URL responde? ¿cuántos videos? ──
+  echo "▶ Verificando la URL..."
+  if [[ "$IS_PLAYLIST" -eq 1 ]]; then
+    PRE="$(quick_query "${YES_PLAYLIST[@]}" --print '%(playlist_count)s|%(id)s')"
+    COUNT="${PRE%%|*}"
+  else
+    PRE="$(quick_query "${NO_PLAYLIST[@]}" --print '%(id)s')"
+  fi
+
+  if [[ -z "$PRE" ]]; then
+    echo "⚠ La URL no responde o no es descargable con yt-dlp." >&2
+    read -r -p "   ¿Intentar de todos modos? [N]: " FORZAR
+    case "${FORZAR:-n}" in
+      s | S | y | Y) ;;
+      *) die "Cancelado. Revisa la URL o si el sitio permite descargas." ;;
+    esac
+  else
+    if [[ "$IS_PLAYLIST" -eq 1 ]] && [[ "$COUNT" =~ ^[0-9]+$ ]]; then
+      echo "✅ URL válida — la playlist tiene $COUNT videos."
+    else
+      echo "✅ URL válida"
+    fi
+  fi
+
+  # ── Configuración de playlist ──
+  if [[ "$IS_PLAYLIST" -eq 1 ]]; then
+    OUTPUT_ARGS=(-o '%(playlist_title)s/%(playlist_index 03d)s - %(title)s.%(ext)s')
+    [[ "$COUNT" =~ ^[0-9]+$ ]] || echo "(no se pudo obtener el número de videos)"
+    while true; do
+      read -r -p "🎞 ¿Cuántos videos? (Enter = todos, N = primeros N, a-b = rango): " QTY
+      QTY="${QTY:-all}"
+      case "$QTY" in
+        all | todos) break ;;
+        *)
+          if [[ "$QTY" =~ ^[0-9]+$ ]]; then
+            PLAYLIST_ITEMS=(--playlist-items "1-$QTY"); break
+          elif [[ "$QTY" =~ ^[0-9]+-[0-9]+$ ]]; then
+            PLAYLIST_ITEMS=(--playlist-items "$QTY"); break
+          else
+            echo "❌ Usa: Enter, N o a-b." >&2
+          fi
+          ;;
+      esac
+    done
+  fi
+
+  # ── Resolución ──
+  while true; do
+    read -r -p "🎚 Resolución (max|2160|1440|1080|720|480|360|audio) [max]: " RES
+    RES="${RES:-max}"
+    case "$RES" in
+      max) FORMAT="bestvideo*+bestaudio/best"; EXTRA_ARGS=(); break ;;
+      audio) FORMAT="bestaudio/best"; EXTRA_ARGS=(-x --audio-format mp3); break ;;
+      2160 | 1440 | 1080 | 720 | 480 | 360)
+        FORMAT="bv*[height<="$RES"]+ba/b[height<="$RES"]"; EXTRA_ARGS=(); break ;;
+      *) echo "❌ Resolución inválida. Usa: max, 2160, 1440, 1080, 720, 480, 360 o audio." >&2 ;;
+    esac
+  done
+
+  # ── Descarga ──
+  echo ""
+  echo "▶ Descargando (resolución: $RES) ..."
+  trap 'echo ""; echo "⏸ Interrumpida. Repite el mismo comando y la misma URL para reanudar."' INT
+  if "$YTDLP" --no-update "${JS_ARGS[@]+"${JS_ARGS[@]}"}" -f "$FORMAT" \
+      --retries 3 --socket-timeout 30 \
+      "${YES_PLAYLIST[@]+"${YES_PLAYLIST[@]}"}" "${NO_PLAYLIST[@]+"${NO_PLAYLIST[@]}"}" \
+      "${PLAYLIST_ITEMS[@]+"${PLAYLIST_ITEMS[@]}"}" "${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"}" \
+      "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" "$URL"; then
     echo ""
+    echo "✅ Descarga completada."
+    trap - INT
+  else
+    rc=$?
+    echo "❌ La descarga falló (código $rc). Si quedó a medias, reanuda con el mismo comando y URL." >&2
+    trap - INT
+    exit "$rc"
   fi
 }
 
-# Ejecuta un comando con privilegios de root (sudo si hace falta)
+# ═════════════════════════════════════════════════════════════
+#  HELPERS
+# ═════════════════════════════════════════════════════════════
+
+die() { echo "❌ $*" >&2; exit 1; }
+
+# Consulta rápida: confirma que la URL responde y devuelve metadatos
+quick_query() {
+  timeout 20 "$YTDLP" --no-update "${JS_ARGS[@]+"${JS_ARGS[@]}"}" \
+    --simulate --flat-playlist "$@" "$URL" 2>/dev/null | head -1 || true
+}
+
+detect_pkgmgr() {
+  command -v apt-get >/dev/null 2>&1 && { echo apt; return; }
+  command -v dnf     >/dev/null 2>&1 && { echo dnf; return; }
+  command -v yum     >/dev/null 2>&1 && { echo yum; return; }
+  command -v pacman  >/dev/null 2>&1 && { echo pacman; return; }
+  command -v zypper  >/dev/null 2>&1 && { echo zypper; return; }
+  command -v apk     >/dev/null 2>&1 && { echo apk; return; }
+  command -v pkg     >/dev/null 2>&1 && command -v termux-info >/dev/null 2>&1 && { echo pkg; return; }
+  command -v brew    >/dev/null 2>&1 && { echo brew; return; }
+}
+
 run_root() {
   if [[ $EUID -eq 0 ]]; then
     "$@"
   elif command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
-    echo "❌ Necesito permisos de root para instalar, pero no hay sudo disponible." >&2
-    echo "   Ejecuta el script como root o instala sudo." >&2
+    echo "❌ Sin acceso root ni sudo para instalar paquetes." >&2
     return 1
   fi
 }
 
-# Instala los paquetes dados según el gestor detectado
 install_pkgs() {
   local pm="$1"
   shift
   case "$pm" in
-    apt)   run_root apt-get update && run_root apt-get install -y "$@" ;;
-    dnf)   run_root dnf install -y "$@" ;;
-    yum)   run_root yum install -y "$@" ;;
+    apt)    run_root apt-get update && run_root apt-get install -y "$@" ;;
+    dnf)    run_root dnf install -y "$@" ;;
+    yum)    run_root yum install -y "$@" ;;
     pacman) run_root pacman -S --noconfirm "$@" ;;
     zypper) run_root zypper --non-interactive install "$@" ;;
-    apk)   run_root apk add "$@" ;;
-    pkg)   run_root pkg install -y "$@" ;;
-    brew)  brew install "$@" ;;
+    apk)    run_root apk add "$@" ;;
+    pkg)    run_root pkg install -y "$@" ;;
+    brew)   brew install "$@" ;;
     *)
-      echo "❌ No detecté un gestor de paquetes compatible." >&2
-      echo "   Instala manualmente: python3, curl, ffmpeg y (opcional) node." >&2
+      echo "❌ Gestor de paquetes no soportado. Instala manualmente." >&2
       return 1
       ;;
   esac
 }
 
-# ============================================================
-# 2) VERIFICAR E INSTALAR DEPENDENCIAS
-# ============================================================
-PKGMGR="$(detect_pkgmgr)"
-
 ensure_cmd() {
   local cmd="$1"
   shift
-  local pkgs=("$@")
   if command -v "$cmd" >/dev/null 2>&1; then
     echo "✅ $cmd detectado"
     return 0
   fi
-  echo "⚠ $cmd NO está instalado → instalando..."
-  if [[ -z "$PKGMGR" ]]; then
-    echo "   (sin gestor de paquetes, instálalo manualmente)" >&2
+  echo "⚠ $cmd no está instalado → instalando..."
+  if [[ -z "$PKGMGR" ]] || ! install_pkgs "$PKGMGR" "$@"; then
+    echo "   Instálalo manualmente o revisa la conexión." >&2
     MISSING_DEPS+=" $cmd"
-    return 1
+  elif command -v "$cmd" >/dev/null 2>&1; then
+    echo "✅ $cmd instalado"
+  else
+    echo "   Instálalo manualmente." >&2
+    MISSING_DEPS+=" $cmd"
   fi
-  if install_pkgs "$PKGMGR" "${pkgs[@]}"; then
-    if command -v "$cmd" >/dev/null 2>&1; then
-      echo "✅ $cmd instalado"
-      return 0
-    fi
-  fi
-  echo "❌ No se pudo instalar $cmd." >&2
-  MISSING_DEPS+=" $cmd"
-  return 1
 }
 
-echo "── Verificando dependencias ──"
-ensure_cmd python3 python3
-ensure_cmd curl curl
-ensure_cmd ffmpeg ffmpeg
-if command -v node >/dev/null 2>&1; then
-  echo "✅ node detectado (runtime JS)"
-elif command -v deno >/dev/null 2>&1; then
-  echo "✅ deno detectado (runtime JS)"
-elif command -v bun >/dev/null 2>&1; then
-  echo "✅ bun detectado (runtime JS)"
-else
-  echo "⚠ Ningún runtime JS (node/deno/bun) → instalando nodejs..."
-  if [[ -n "$PKGMGR" ]]; then
-    install_pkgs "$PKGMGR" nodejs || MISSING_DEPS+=" nodejs"
+ensure_deps() {
+  PKGMGR="$(detect_pkgmgr)"
+  MISSING_DEPS=""
+  echo "── Verificando dependencias ──"
+  ensure_cmd python3 python3
+  ensure_cmd curl curl
+  ensure_cmd ffmpeg ffmpeg
+  if command -v node >/dev/null 2>&1; then
+    echo "✅ node detectado (runtime JS)"
+  elif command -v deno >/dev/null 2>&1; then
+    echo "✅ deno detectado (runtime JS)"
+  elif command -v bun >/dev/null 2>&1; then
+    echo "✅ bun detectado (runtime JS)"
+  elif [[ -n "$PKGMGR" ]]; then
+    echo "⚠ Sin runtime JS → instalando nodejs..."
+    install_pkgs "$PKGMGR" nodejs >/dev/null 2>&1 || MISSING_DEPS+=" nodejs"
   else
     MISSING_DEPS+=" nodejs"
   fi
-fi
+  [[ -z "$MISSING_DEPS" ]] || die "Faltan dependencias que no pude instalar:$MISSING_DEPS"
+}
 
-if [[ -n "$MISSING_DEPS" ]]; then
-  echo "❌ Faltan dependencias que no pude instalar:$MISSING_DEPS" >&2
-  echo "   Revisa la conexión a internet o instálalas manualmente y vuelve a ejecutar." >&2
-  exit 1
-fi
-
-# ============================================================
-# 3) ASEGURAR yt-dlp EN SU ÚLTIMA VERSIÓN
-# ============================================================
-if [[ ! -x "$YTDLP" ]]; then
-  echo "▶ Instalando yt-dlp (última versión) en ~/.local/bin ..."
-  mkdir -p "$HOME/.local/bin"
-  curl -sL -o "$YTDLP" https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
-  chmod +x "$YTDLP"
-fi
-
-# JS runtime a usar para resolver los retos de YouTube
-JS_ARGS=()
-if command -v node >/dev/null 2>&1; then
-  JS_ARGS=(--js-runtimes node)
-elif command -v bun >/dev/null 2>&1; then
-  JS_ARGS=(--js-runtimes bun)
-fi
-
-# ============================================================
-# 4) PEDIR URL Y DETECTAR SU TIPO
-# ============================================================
-# Clasifica el enlace:
-#   video          → video suelto (sin list=)
-#   playlist       → URL de playlist pura (youtube.com/playlist?list=...)
-#   video+playlist → video dentro de playlist (youtu.be/xxx?list=... o watch?v=...&list=...)
-detect_url_type() {
-  local url="$1"
-  if [[ "$url" != *"list="* ]]; then
-    echo "video"
-  elif [[ "$url" == *"/playlist?"* ]]; then
-    echo "playlist"
-  else
-    echo "video+playlist"
+ensure_ytdlp() {
+  if [[ ! -x "$YTDLP" ]] || ! "$YTDLP" --version >/dev/null 2>&1; then
+    echo "▶ Instalando yt-dlp (última versión) en ~/.local/bin ..."
+    mkdir -p "$HOME/.local/bin"
+    curl -fsSL --retry 3 -o "$YTDLP" \
+      https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+      || die "No se pudo descargar yt-dlp. Revisa la conexión a internet."
+    chmod +x "$YTDLP"
+    "$YTDLP" --version >/dev/null 2>&1 \
+      || die "yt-dlp quedó corrupto. Borra ~/.local/bin/yt-dlp y vuelve a ejecutar."
   fi
 }
 
-read -r -p "🔗 URL del video o playlist: " URL
-if [[ -z "$URL" ]]; then
-  echo "❌ No ingresaste ninguna URL." >&2
-  exit 1
-fi
-
-URL_TYPE="$(detect_url_type "$URL")"
-
-YES_PLAYLIST=()
-NO_PLAYLIST=()
-PLAYLIST_ITEMS=()
-OUTPUT_ARGS=()
-IS_PLAYLIST=0
-
-case "$URL_TYPE" in
-  video)
-    ;;
-  video+playlist)
-    echo ""
-    echo "⚠ Este enlace contiene un video Y una playlist. ¿Qué deseas descargar?"
-    echo "  1) Solo el video"
-    echo "  2) Toda la playlist"
-    read -r -p "Elige [1]: " COMBO
-    COMBO="${COMBO:-1}"
-    case "$COMBO" in
-      1)
-        NO_PLAYLIST=(--no-playlist)
-        ;;
-      2)
-        YES_PLAYLIST=(--yes-playlist)
-        IS_PLAYLIST=1
-        ;;
-      *)
-        echo "❌ Opción inválida: $COMBO" >&2
-        exit 1
-        ;;
-    esac
-    ;;
-  playlist)
-    YES_PLAYLIST=(--yes-playlist)
-    IS_PLAYLIST=1
-    ;;
-esac
-
-# ============================================================
-# 5) CONFIGURAR DESCARGA DE PLAYLIST (si aplica)
-# ============================================================
-if [[ "$IS_PLAYLIST" -eq 1 ]]; then
-  OUTPUT_ARGS=(-o '%(playlist_title)s/%(playlist_index 03d)s - %(title)s.%(ext)s')
-
-  echo ""
-  echo "▶ Consultando la playlist..."
-  COUNT="$(timeout 30 "$YTDLP" --no-update --flat-playlist --yes-playlist \
-    --print playlist_count "$URL" 2>/dev/null | head -1 || true)"
-
-  echo ""
-  if [[ "$COUNT" =~ ^[0-9]+$ ]]; then
-    echo "  La playlist tiene $COUNT videos."
-  else
-    echo "  (no se pudo obtener el número de videos)"
-  fi
-  read -r -p "🎞 ¿Cuántos videos quieres descargar? (Enter = todos, N = primeros N, a-b = rango) [todos]: " QTY
-  QTY="${QTY:-all}"
-
-  case "$QTY" in
-    all | todos)
-      PLAYLIST_ITEMS=()
-      ;;
-    *)
-      if [[ "$QTY" =~ ^[0-9]+$ ]]; then
-        PLAYLIST_ITEMS=(--playlist-items "1-$QTY")
-      elif [[ "$QTY" =~ ^[0-9]+-[0-9]+$ ]]; then
-        PLAYLIST_ITEMS=(--playlist-items "$QTY")
-      else
-        echo "❌ Cantidad inválida: $QTY (usa: Enter, N o a-b)" >&2
-        exit 1
-      fi
-      ;;
-  esac
-fi
-
-# ============================================================
-# 6) PEDIR RESOLUCIÓN
-# ============================================================
-echo ""
-echo "Resoluciones disponibles:"
-echo "  max            → máxima calidad disponible (por defecto)"
-echo "  2160/1440/1080/720/480/360 → limitar a esa resolución"
-echo "  audio          → solo audio en mp3"
-read -r -p "🎚 Resolución [max]: " RES
-RES="${RES:-max}"
-
-EXTRA_ARGS=()
-case "$RES" in
-  max)
-    FORMAT="bestvideo*+bestaudio/best"
-    ;;
-  audio)
-    FORMAT="bestaudio/best"
-    EXTRA_ARGS=(-x --audio-format mp3)
-    ;;
-  *)
-    if [[ "$RES" =~ ^[0-9]+$ ]]; then
-      FORMAT="bv*[height<="$RES"]+ba/b[height<="$RES"]"
-    else
-      echo "❌ Resolución inválida: $RES" >&2
-      exit 1
-    fi
-    ;;
-esac
-
-# ============================================================
-# 7) DESCARGAR
-# ============================================================
-echo ""
-echo "▶ Descargando (resolución: $RES) ..."
-"$YTDLP" --no-update "${JS_ARGS[@]+"${JS_ARGS[@]}"}" \
-  -f "$FORMAT" \
-  --retries 5 \
-  "${YES_PLAYLIST[@]+"${YES_PLAYLIST[@]}"}" \
-  "${NO_PLAYLIST[@]+"${NO_PLAYLIST[@]}"}" \
-  "${PLAYLIST_ITEMS[@]+"${PLAYLIST_ITEMS[@]}"}" \
-  "${OUTPUT_ARGS[@]+"${OUTPUT_ARGS[@]}"}" \
-  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
-  "$URL"
+main "$@"
