@@ -7,12 +7,14 @@ Script de bash para descargar **videos y playlists** de YouTube con **yt-dlp** e
 - **Se auto-instala las dependencias**: verifica si faltan `python3`, `curl`, `ffmpeg` y un runtime JS (`node`/`deno`/`bun`), y las instala con el gestor de paquetes de tu sistema (`apt`, `dnf`, `yum`, `pacman`, `zypper`, `apk`, `pkg`/Termux, `brew`/macOS).
 - **yt-dlp siempre actualizado**: si no lo encuentra, descarga la última versión oficial en `~/.local/bin`.
 - **Evita el error HTTP 403 de YouTube**: usa un runtime JS para resolver los retos de YouTube (PO tokens / nsig).
+- **Supera el bloqueo anti-bot** ("Sign in to confirm you're not a bot"): usa las cookies de tu navegador (Firefox, Chrome, Brave, Edge, ...). Se desactiva con `NO_COOKIES=1`.
 - **Soporta playlists completas**: pega el enlace de una playlist y descarga todos sus videos.
 - **Detecta el tipo de enlace** (video suelto / playlist pura / video dentro de playlist) y ajusta las preguntas según el caso.
 - **Elige cuántos videos descargar** de una playlist: todos, los primeros `N`, o un rango `a-b`.
 - **Organiza las playlists en carpetas**: cada playlist se guarda en una carpeta con su nombre, con videos numerados.
 - **Interfaz mínima**: solo te pide la **URL**, cuántos videos (si aplica) y la **resolución**. Nada más.
-- **Reintentos automáticos** (5) ante cortes de red.
+- **Reintentos automáticos** (3) y timeout de red (30 s) ante cortes.
+- **Valida la URL antes de descargar**: detecta en segundos si el sitio no permite descargas y te avisa, en vez de esperar minutos.
 - **Funciona en**: Linux, macOS, WSL, Termux (Android).
 
 ## 🚀 Instalación
@@ -29,6 +31,8 @@ curl -fsSL -o descargar https://raw.githubusercontent.com/pedromcd999/yt-descarg
 chmod +x descargar
 ./descargar
 ```
+
+> 💡 `descargar` necesita su archivo de ayuda `lib.sh` (instalador y utilidades): **lo descarga solo la primera vez** desde este repo, junto al propio script. No hace falta copiar nada más.
 
 Para usarlo desde cualquier carpeta:
 
@@ -112,15 +116,21 @@ El script las instala automáticamente si faltan (pide contraseña de `sudo` sol
 | Error | Causa | Solución |
 |---|---|---|
 | `HTTP Error 403: Forbidden` | yt-dlp desactualizado o sin runtime JS | Ejecuta el script (instala todo solo) o actualiza yt-dlp |
+| `Sign in to confirm you're not a bot` | YouTube bloquea la IP anónima | El script usa las cookies de tu navegador; si no, inicia sesión en YouTube en tu navegador. `NO_COOKIES=1` lo desactiva |
 | `ERROR: ffmpeg not found` | Falta ffmpeg | El script lo instala automáticamente |
 | Descarga se corta | Red inestable | Reintenta con la misma URL — se reanuda |
+
+## 📁 Estructura
+
+- **`descargar`** — flujo de descarga (~150 líneas): URL, preguntas, pre-flight y llamada a yt-dlp.
+- **`lib.sh`** — helpers (~110 líneas): instalación de dependencias, yt-dlp y utilidades. Se carga con `source` y se descarga sola la primera vez si falta.
 
 ## 💳 Créditos
 
 Este proyecto **no contiene código de yt-dlp** y **no se atribuye su autoría**.
 
 - **yt-dlp** es un proyecto de la comunidad ([yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)), publicado bajo licencia **Unlicense** (dominio público).
-- Este script es un **wrapper** de ~60 líneas: al ejecutarlo descarga el **binario oficial** de yt-dlp desde el repo de sus releases (`https://github.com/yt-dlp/yt-dlp/releases`) y lo invoca. Todo el mérito de la descarga es de su proyecto.
+- Este script es un **wrapper**: al ejecutarlo descarga el **binario oficial** de yt-dlp desde el repo de sus releases (`https://github.com/yt-dlp/yt-dlp/releases`) y lo invoca. Todo el mérito de la descarga es de su proyecto.
 - Si este script te es útil, apoya el proyecto original: ⭐ [github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
 
 ## 📄 Licencia
